@@ -1,0 +1,32 @@
+# XAMPP specific
+/xampp/
+/htdocs/
+/tmp/
+/php/
+/mysql/
+
+# Environment files
+.env
+*.env
+
+# Log files
+*.log
+
+# Dependency directories
+vendor/
+node_modules/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

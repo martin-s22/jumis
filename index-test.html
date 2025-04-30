@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+    <html>
+    <head>
+    <title>Интерфејс за нарачки</title>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg==" crossorigin="anonymous" referrerpolicy="no-referrer"/>
+  <link rel="stylesheet" type="text/css" href="https://npmcdn.com/flatpickr/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="style.css">
+  <link type="text/js" href="l10n/mk.js">
+  <script src="flatpickr.min.js"></script>
+ </head>
+ <body>
+  <div id="loading-overlay" style="display: none;">
+   <div class="loading-spinner"></div>
+  </div>
+  <div class="taskbar">
+   <img src="/jumis/jumis-logo.svg" alt="Logo" class="logo">
+   <div class="buttons">
+    <button class="get-today-orders"><i class="fas fa-download"></i>Преземи денешни нарачки</button>
+    <button class="get-orders-from-period"><i class="fas fa-cloud-download-alt"></i>Преземи нарачки од период</button>
+    <button class="get-a-order" id="get-a-order"><i class="fas fa-file-download"></i>Преземи нарачка</button>
+    <button id="show-offer-import"><i class="fas fa-history"></i>Преземи од претходни понуди</button>
+   </div>
+  </div>
+  <div class="sidebar">
+   <div class="user-info">
+    </div>
+
+   <div class="navigation">
+    </div>
+
+   <div class="orders-section">
+    <h5>Нарачки</h5>
+    <ul class="orders-list">
+     </ul>
+   </div>
+  </div>
+  <div id="order-container" style="display:none;">
+   </div>
+  <div id="offer-import-popup">
+   <h2>Селектирај од листата на понуди за преземање</h2>
+   <div id="offer-tables-container"></div>
+   <button id="import-selected-offers">Преземи</button>
+   <button id="close-offer-import"><i class="fas fa-close"></i></button>
+  </div>
+  <div id="period-popup">
+   <h2>Избери период за преземање на нарачки</h2>
+   <label for="date-range">Избери период:</label>
+   <input type="text" id="date-range" name="date-range" placeholder="Пр: Од 01.01.2025 до 31.12.2025" readonly>
+   <button id="get-orders-period-button">Преземи</button>
+   <button id="close-period-popup"><i class="fas fa-close"></i></button>
+  </div>
+  <div id="orderSearchPopup">
+   <h2>Преземи нарачка по шифра:</h2>
+   <label for="orderSearchInput">Внеси шифра на нарачка:</label>
+   <input type="text" id="orderSearchInput" name="orderSearchInput" placeholder="Пр: 25-011-0011" list="orderSuggestions">
+   <datalist id="orderSuggestions"></datalist>
+   <button id="searchOrderButton">Преземи</button>
+   <button id="close-orderSearchPopup"><i class="fas fa-close"></i></button>
+   <div id="orderSearchResults"></div>
+  </div>
+  <script>
+ document.addEventListener('DOMContentLoaded', () => {
+  const loadingOverlay = document.getElementById('loading-overlay');
+  function showLoading() {
+   loadingOverlay.style.display = 'flex';
+  }
+  function hideLoading() {
+   loadingOverlay.style.display = 'none';
+  }
+  let missingDataMessages = [];
+  const getTodayOrdersButton = document.querySelector('.get-today-orders');
+  const getOrdersFromPeriodButton = document.querySelector('.get-orders-from-period');
+  const periodPopup = document.getElementById('period-popup');
+  const closePeriodPopupButton = document.getElementById('close-period-popup');
+  const getOrdersPeriodButton = document.getElementById('get-orders-period-button');
+  const dateRangeInput = document.getElementById('date-range');
+  const orderContainer = document.getElementById('order-container');
+  const ordersListSidebar = document.querySelector('.orders-section .orders-list'); // New sidebar list
+
+  function checkForMissingData(orders) {
+   const missingData = [];
+   if (!orders || !Array.isArray(orders)) return missingData;
+   orders.forEach(order => {
+    if (!order.Orderitem || !Array.isArray(order.Orderitem) || order.Orderitem.length === 0) {
+     missingData.push({ orderKey: order.acKeyView, field: "Orderitem" });
+    } else {
+     order.Orderitem.forEach((item, itemIndex) => {
+      for (const key in item) {
+       if (item.hasOwnProperty(key) && (item[key] === null || item[key] === undefined || item[key] === "")) {
+        missingData.push({ orderKey: order.acKeyView, field: `Orderitem.<span class="math-inline">\{itemIndex\}\.</span>{key}` });
+       }
+      }
+     });
+    }
+   });
+   return missingData;
+  }
+  function displayMissingDataModal(missingData, orders, importFunction) {
+   if (missingData.length === 0) {
+    importFunction(orders);
+    return;
+   }
+   const overlay = document.createElement('div');
+   overlay.id = 'modal-overlay';
+   document.body.appendChild(overlay);
+   const modal = document.createElement('div');
+   modal.id = 'missing-data-modal';
+   let modalContent = `
+    <h3>Во некои полиња недостасуваат вредности!!!</h3>
+    <table class="order-table missing">
+     <tbody>
+      <tr></tr>
+      <tr>
+       <th>Импорт</th>
+       <th>Нарачка</th>
+       <th>Полиња кои недостатсуваат</th>
+      </tr>
+    `;
+   const ordersWithMissingData = new Set();
+   const missingDataByOrder = {};
+   missingData.forEach(item => {
+    ordersWithMissingData.add(item.orderKey);
+    if (!missingDataByOrder[item.orderKey]) {
+     missingDataByOrder[item.orderKey] = [];
+    }
+    missingDataByOrder[item.orderKey].push(item.field);
+   });
+   const ordersToShow = orders.filter(order => ordersWithMissingData.has(order.acKeyView));
+   ordersToShow.forEach(order => {
+    const isMissing = !0;
+    modalContent += `
+      <tr>
+       <th><input type="checkbox" <span class="math-inline">\{isMissing ? '' \: ''\} id\="order\-</span>{order.acKeyView}" value="<span class="math-inline">\{order\.acKeyView\}"\></th\>
+<th\></span>{order.acKeyView}</th>
+       <th>
+    `;
+    const missingFields = missingDataByOrder[order.acKeyView];
+    if (missingFields.length === 1 && missingFields[0] === "Orderitem") {
+     modalContent += `<span style="color: red;">Оваа нарачка нема иденти</span>`;
+    } else {
+     missingFields.forEach((field, index) => {
+      let fieldName = "";
+      let acIdentValue = "";
+      const fieldParts = field.split(".");
+      const itemIndex = parseInt(fieldParts[1]);
+      const missingKey = fieldParts[2];
+      const missingOrderItem = order.Orderitem[itemIndex];
+      if (missingOrderItem) {
+       acIdentValue = missingOrderItem.acIdent || "";
+       if (missingKey === "acIdent") {
+        fieldName = "Шифра на артиклот";
+       } else if (missingKey === "acName") {
+        fieldName = "Назив на артиклот";
+       } else if (missingKey === "anQty") {
+        fieldName = "Количина";
+       } else if (missingKey === "acDept") {
+        fieldName = "Оддел";
+       } else if (missingKey === "ACCLASSIF") {
+        fieldName = "Класификација";
+       }
+       modalContent += fieldName + " во " + acIdentValue;
+       if (missingFields.length > 1) {
+        if (index === missingFields.length - 2) {
+         modalContent += " и ";
+        } else if (index < missingFields.length - 2) {
+         modalContent += ", ";
+        }
+       }
+      } else {
+       console.error("Нема иденти во нарачката:", order.acKeyView);
+      }
+     });
+    }
+    modalContent += `</th></tr>`;
+   });
+   modalContent += `
+     </tbody>
+    </table>
+    <button id="continue-import">Импортирај ги избраните нарачки</button>
+    <button id="terminate-import">Стопирај го импортот</button>
+    <button id="close-missing-data-modal"><i class="fas fa-close"></i></button>
+    `;
+   modal.innerHTML = modalContent;
+   document.body.appendChild(modal);
+   const table = document.querySelector('#missing-data-modal table');
+   if (table) {
+    table.addEventListener('mouseover', (event) => {
+     const target = event.target;
+     const row = target.closest('tr');
+     if (row) {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      if (checkbox && !checkbox.checked) {
+       row.classList.add('hovered');
+      }
+     }
+    });
+    table.addEventListener('mouseout', (event) => {
+     const target = event.target;
+     const row = target.closest('tr');
+     if (row) {
+      row.classList.remove('hovered');
+     }
+    });
+    table.addEventListener('click', (event) => {
+     const target = event.target;
+     const row = target.closest('tr');
+     if (row) {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      if (checkbox) {
+       if (event.shiftKey && lastChecked) {
+        const checkboxes = Array.from(table.querySelectorAll('input[type="checkbox"]'));
+        const start = checkboxes.indexOf(lastChecked);
+        const end = checkboxes.indexOf(checkbox);
+        const [min, max] = [Math.min(start, end), Math.max(start, end)];
+        for (let i = min; i <= max; i++) {
+         checkboxes[i].checked = !0;
+        }
+       } else {
+        checkbox.checked = !checkbox.checked;
+        lastChecked = checkbox;
+       }
+       row.classList.remove('hovered');
+      }
+     }
+    });
+   }
+   document.getElementById('continue-import').addEventListener('click', () => {
+    const selectedOrders = [];
+    const unselectedOrders = [];
+    document.querySelectorAll('#missing-data-modal input[type="checkbox"]').forEach(checkbox => {
+     const orderKey = checkbox.value;
+     const selectedOrder = orders.find(order => order.acKeyView === orderKey);
+     if (selectedOrder) {
+      if (checkbox.checked) {
+       selectedOrders.push(selectedOrder);
+      } else {
+       unselectedOrders.push(selectedOrder);
+      }
+     }
+    });
+    modal.remove();
+    overlay.remove();
+    let ordersToLoad = [];
+    if (selectedOrders.length > 0) {
+     const ordersWithoutMissing = orders.filter(order => !missingData.some(md => md.orderKey === order.acKeyView));
+     ordersToLoad = [...selectedOrders, ...ordersWithoutMissing.filter(order => !selectedOrders.includes(order))];
+    } else {
+     ordersToLoad = orders.filter(order => !unselectedOrders.includes(order));
+    }
+    loadOrders(ordersToLoad, !0);
+   });
+   document.getElementById('terminate-import').addEventListener('click', () => {
+    modal.remove();
+    overlay.remove();
+   });
+   document.getElementById('close-missing-data-modal').addEventListener('click', () => {
+    modal.remove();
+    overlay.remove();
+   });
+   overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+     modal.remove();
+     overlay.remove();
+    }
+   });
+  }
+  const style = document.createElement('style');
+  style.textContent = `
+   #missing-data-modal table tr.hovered {
+    background-color: #736b6c9e;
+   }
+  `;
+  document.head.appendChild(style);
+  getTodayOrdersButton.addEventListener('click', () => {
+   showLoading();
+   clearLocalStorage();
+   const today = new Date();
+   const year = today.getFullYear();
+   const month = String(today.getMonth() + 1).padStart(2, '0');
+   const day = String(today.getDate()).padStart(2, '0');
+   const formattedDate = `<span class="math-inline">\{year\}\-</span>{month}-${day}`;
+   fetch('lista-na-identi-sorted.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'date=' + formattedDate
+   }).then(response => {
+    if (!response.ok) {
+     return response.json().then(err => {
+      throw new Error(err.error || 'HTTP error ' + response.status);
+     });
+    }
+    return response.json();
+   }).then(data => {
+    console.log("Response from PHP:", data);
+    alert(data.message);
+    if (data.clickUpResults) {
+     data.clickUpResults.forEach(result => {
+      if (result.error) {
+       console.error("ClickUp Error:", result.error);
+       alert("Some ClickUp tasks may have failed: " + result.error);
+      } else {
+       console.log(`ClickUp Task ${result.action}:`, result.task_id);
+      }
+     });
+    }
+    if (data.orders) {
+     console.log("Orders:", data.orders);
+    }
+    loadOrders();
+    hideLoading();
+    window.location.reload(!0);
+   }).catch(error => {
+    console.error('Error (Today\'s Orders):', error);
+    hideLoading();
+    window.location.reload(!0);
+   });
+  });
+  flatpickr("#date-range", {
+   mode: "range",
+   dateFormat: "d.m.Y",
+   maxDate: "today",
+   onClose: function (selectedDates, dateStr, instance) {
+    if (selectedDates.length === 1) {
+     dateRangeInput.value = instance.formatDate(selectedDates[0], "d.m.Y");
+    } else if (selectedDates.length === 2) {
+     dateRangeInput.value = instance.formatDate(selectedDates[0], "d.m.Y") + " до " + instance.formatDate(selectedDates[1], "d.m.Y");
+    }
+    if (selectedDates.length > 0) {
+     const endDate = new Date(selectedDates[selectedDates.length - 1]);
+     const today = new Date();
+     if (endDate > today) {
+      alert("Не можете да изберете датуми во иднина.");
+      instance.clear();
+      return;
+     }
+    }
+   }
+  });
+  getOrdersFromPeriodButton.addEventListener('click', () => {
+   periodPopup.style.display = 'block';
+   const overlay = document.createElement('div');
+   overlay.id = 'modal-overlay';
+   document.body.appendChild(overlay);
+   overlay.addEventListener('click', () => {
+    if (event.target === overlay) {
+     periodPopup.style.display = 'none';
+     overlay.style.display = 'none';
+    }
+   });
+  });
+  closePeriodPopupButton.addEventListener('click', () => {
+   periodPopup.style.display = 'none';
+   window.location.reload(!0);
+  });
+  getOrdersPeriodButton.addEventListener('click', () => {
+   showLoading();
+   clearLocalStorage();
+   let dateRange = dateRangeInput.value;
+   if (!dateRange) {
+    alert("Ве молиме изберете период.");
+    return;
+   }
+   let dates = dateRange.split(" до ");
+   let startDate = dates[0];
+   let endDate = dates[1];
+   if (!endDate) {
+    endDate = startDate;
+    dateRange = startDate + " до " + endDate;
+    dateRangeInput.value = dateRange;
+   }
+   if (!startDate || !endDate) {
+    alert("Невалиден период.");
+    return;
+   }
+   fetch('lista-na-identi-sorted.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `start_date=<span class="math-inline">\{startDate\}&end\_date\=</span>{endDate}`
+   }).then(response => {
+    if (!response.ok) {
+     return response.json().then(err => {
+      throw new Error(err.error || 'HTTP error ' + response.status);
+     });
+    }
+    return response.json();
+   }).then(data => {
+    console.log("Response from PHP:", data);
+    alert(data.message);
+    if (data.orders) {
+     loadOrders(data.orders, !0);
+     updateSidebarOrders(data.orders); // Update sidebar
+    }
+    if (data.clickUpResults) {
+     data.clickUpResults.forEach(result => {
+      if (result.error) {
+       console.error("ClickUp Error:", result.error);
+       alert("Some ClickUp tasks may have failed: " + result.error);
+      } else {
+       console.log(`ClickUp Task ${result.action}:`, result.task_id);
+      }
+     });
+    }
+    hideLoading();
+   }).catch(error => {
+    console.error('Error (Period Orders):', error);
+    hideLoading();
+    window.location.reload(!0);
+   });
+  });
+
+  loadOrders();
+
+  function convertDateToTimestamp(dateString) {
+   const date = new Date(dateString);
+   return date.getTime();
+  }
+
+  const assignees_mapping = {
+   "Производство РАМНИ ПОВРШИНИ": [],
+   "Производство ТАПЕТАРИЈА": [],
+   "Производство СТОЛИЧАРА": [],
+  };
+
+  async function createClickUpListWithIcon(folder_id, list_name, api_key) {
+   const list_url = `https://api.clickup.com/api/v2/folder/${folder_id}/list`;
+   const response = await fetch(list_url, {
+    method: 'POST',
+    headers: { 'Authorization': api_key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: list_name })
+   });
+   const listData = await response.json();
+   if (listData && listData.id) {
+    const listId = listData.id;
+    await updateListIcon(listId, api_key, '#d33d44');
+    return listId;
+   } else {
+    console.error("Error creating ClickUp list:", listData);
+    return null;
+   }
+  }
+
+  async function updateListIcon(list_id, api_key, color) {
+   const iconUrl = `https://api.clickup.com/api/v2/list/${list_id}`;
+   const response = await fetch(iconUrl, {
+    method: 'PUT',
+    headers: { 'Authorization': api_key, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ icon: color })
+   });
+   const responseData = await response.json();
+   if (responseData.err) {
+    console.error("Error updating ClickUp list icon:", responseData.err);
+   }
+  }
+
+  function createOrderTable(order) {
+   const table = document.createElement('table');
+   table.classList.add('order-table');
+   table.dataset.orderKey = order.acKeyView;
+   let orderInfoRow = table.insertRow();
+   let orderInfoCell1 = orderInfoRow.insertCell();
+   let orderInfoCell2 = orderInfoRow.insertCell();
+   let orderInfoCell3 = orderInfoRow.insertCell();
+   let orderInfoCell4 = orderInfoRow.insertCell();
+   orderInfoCell1.textContent = "НАРАЧКА: " + order.acKeyView + " " + order.acReceiver;
+   orderInfoCell2.textContent = "ДАТУМ: " + formatDate(order.adDate);
+   orderInfoCell3.textContent = "РОК НА ИСПОРАКА: " + formatDate(order.adDeliveryDate);
+   orderInfoCell4.textContent = "РЕФЕРЕНТ: " + order.acConsignee;
+
+   function formatDate(dateString) {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `<span class="math-inline">\{day\}\.</span>{month}.${year}`;
+   }
+
+   let headerRow = table.insertRow();
+   headerRow.insertCell().textContent = "ШИФРА";
+   headerRow.insertCell().textContent = "НАЗИВ НА АРТИКЛОТ";
+   headerRow.insertCell().textContent = "КОЛИЧИНА";
+   headerRow.insertCell().textContent = "ОДДЕЛ";
+   headerRow.insertCell().textContent = "КЛАСИФИКАЦИЈА";
+
+   if (order.Orderitem && Array.isArray(order.Orderitem)) {
+    order.Orderitem.forEach(orderItem => {
+     let itemRow = table.insertRow();
+     itemRow.insertCell().textContent = orderItem.acIdent;
+     itemRow.insertCell().textContent = orderItem.acName;
+     itemRow.insertCell().textContent = orderItem.anQty;
+     itemRow.insertCell().textContent = orderItem.acDept;
+     itemRow.insertCell().textContent = orderItem.ACCLASSIF;
+    });
+   }
+   return table;
+  }
+
+  function loadOrders(ordersData = null, isImported = !1, skipMissingDataCheck = !1) {
+   const orderContainer = document.getElementById('order-container');
+   orderContainer.innerHTML = '';
+   if (ordersData) {
+    localStorage.setItem('ordersData', JSON.stringify(ordersData));
+    console.log("Orders data in loadOrders:", ordersData);
+    if (!skipMissingDataCheck) {
+     const missingData = checkForMissingData(ordersData);
+     if (missingData.length > 0 && !isImported) {
+      displayMissingDataModal(missingData, ordersData, loadOrders);
+     } else {
+      ordersData.forEach(order => {
+       console.log("Creating table for order:", order);
+       const table = createOrderTable(order);
+       orderContainer.appendChild(table);
+      });
+     }
+    } else {
+     ordersData.forEach(order => {
+      const table = createOrderTable(order);
+      orderContainer.appendChild(table);
+     });
+    }
+    updateSidebarOrders(ordersData); // Update sidebar here as well
+   } else {
+    const storedOrders = localStorage.getItem('ordersData');
+    if (storedOrders) {
+     const parsedOrders = JSON.parse(storedOrders);
+     if (parsedOrders && Array.isArray(parsedOrders)) {
+      if (parsedOrders.length === 0) {
+       orderContainer.innerHTML = "<p class='order-missing'>Грешка при вчитување на податоците. Не се пронајдени нарачки.</p>";
+       console.error("Error: 'orders' array is empty in localStorage");
+      } else {
+       parsedOrders.forEach(order => {
+        const table = createOrderTable(order);
+        orderContainer.appendChild(table);
+       });
+       updateSidebarOrders(parsedOrders); // Update sidebar
+      }
+     } else {
+      orderContainer.innerHTML = "<p class='order-missing'>Нема податоци во localStorage.</p>";
+     }
+    } else {
+     fetch('retrieved-data.json').then(response => {
+      if (!response.ok) {
+       throw new Error('Network response was not ok');
+      }
+      return response.json();
+     }).then(data => {
+      console.log("Orders from retrieved-data.json:", data);
+      if (data && data.orders && Array.isArray(data.orders)) {
+       if (data.orders.length === 0) {
+        orderContainer.innerHTML = "<p class='order-missing'>Грешка при вчитување на податоците. Не се пронајдени нарачки.</p>";
+        console.error("Error: 'orders' array is empty in retrieved-data.json");
+       } else {
+        localStorage.setItem('ordersData', JSON.stringify(data.orders));
+        const missingData = checkForMissingData(data.orders);
+        if (missingData.length > 0) {
+         displayMissingDataModal(missingData, data.orders, loadOrders);
+        } else {
+         data.orders.forEach(order => {
+          const table = createOrderTable(order);
+          orderContainer.appendChild(table);
+         });
+         updateSidebarOrders(data.orders); // Update sidebar
+         addDefaultTaskStatus(data.orders);
+         updateClickUpAutomation(data.orders);
+        }
+       }
+      } else {
+       orderContainer.innerHTML = "<p class='order-missing'>Нема податоци во JSON.</p>";
+      }
+     }).catch(error => {
+      console.error('Error fetching data:', error);
+      orderContainer.innerHTML = "<p class='order-missing'>Грешка при вчитување на податоците. Не се пронајдени нарачки.</p>";
+     });
+    }
+   }
+  }
+
+  function updateSidebarOrders(orders) {
+   ordersListSidebar.innerHTML = ''; // Clear existing list
+   if (orders && Array.isArray(orders)) {
+    orders.forEach(order => {
+     const listItem = document.createElement('li');
+     listItem.textContent = order.acKeyView + ' - ' + order.acReceiver;
+     ordersListSidebar.appendChild(listItem);
+    });
+   } else {
+    const errorItem = document.createElement('li');
+    errorItem.textContent = 'Нема податоци за нарачки.';
+    ordersListSidebar.appendChild(errorItem);
+   }
+  }
+
+  function clearLocalStorage() {
+   localStorage.removeItem('ordersData');
+  }
+
+  function addDefaultTaskStatus(orders) {
+   if (!orders || !Array.isArray(orders)) return;
+   orders.forEach(order => {
+    if (order.Orderitem && Array.isArray(order.Orderitem)) {
+     order.Orderitem.forEach(item => {
+      if (!item.task_status) {
+       item.task_status = 'НЕЗАВРШЕН';
+      }
+     });
+    }
+   });
+  }
+
+  async function updateClickUpAutomation(orders) {
+   if (!orders || !Array.isArray(orders)) return;
+   for (const order of orders) {
+    const orderKey = order.acKeyView;
+    const tables = document.querySelectorAll('.order-table');
+    let foundTable = null;
+    tables.forEach(table => {
+     const tds = table.querySelectorAll('td');
+     tds.forEach(td => {
+      if (td.textContent.includes(orderKey)) {
+       foundTable = table;
+      }
+     });
+    });
+    if (foundTable) {
+     const tasksInProgress = order.Orderitem.some(item => item.task_status === 'ВО ИЗРАБОТКА');
+     const tasksCompleted = order.Orderitem.every(item => item.task_status === 'КОМПЛЕТИРАН');
+     const listId = foundTable.dataset.listId;
+     if (listId) {
+      if (tasksInProgress) {
+       await updateListIcon(listId, $clickup_api_key, '#0880ea');
+      } else if (tasksCompleted) {
+       await updateListIcon(listId, $clickup_api_key, '#299764');
+      }
+     }
+    }
+   }
+  }
+
+  const showOfferImportButton = document.getElementById('show-offer-import');
+  const offerImportPopup = document.getElementById('offer-import-popup');
+  const closeOfferImportButton = document.getElementById('close-offer-import');
+  const importSelectedOffersButton = document.getElementById('import-selected-offers');
+  const offerTablesContainer = document.getElementById('offer-tables-container');
+
+  showOfferImportButton.addEventListener('click', () => {
+   offerImportPopup.style.display = 'block';
+   const overlay = document.createElement('div');
+   overlay.id = 'modal-overlay';
+   document.body.appendChild(overlay);
+   overlay.addEventListener('click', () => {
+    if (event.target === overlay) {
+     offerImportPopup.style.display = 'none';
+     overlay.style.display = 'none';
+    }
+   });
+   populateOfferTables();
+  });
+
+  closeOfferImportButton.addEventListener('click', () => {
+   offerImportPopup.style.display = 'none';
+   window.location.reload(!0);
+  });
+
+  function populateOfferTables() {
+   offerTablesContainer.innerHTML = '';
+   const importSelectedOffersButton = document.getElementById('import-selected-offers');
+   fetch('retrieved-offers.json').then(response => response.json()).then(offersData => {
+    if (offersData && offersData.offers && Array.isArray(offersData.offers) && offersData.offers.length > 0) {
+     offersData.offers.forEach(offer => {
+      const offerElement = createOfferTableForOffers(offer);
+      offerTablesContainer.appendChild(offerElement);
+     });
+     importSelectedOffersButton.style.display = 'block';
+    } else {
+     const noOffersMessage = document.createElement('p');
+     noOffersMessage.textContent = "Во моментов нема претходни понуди. Обидете се повторно покасно.";
+     offerTablesContainer.appendChild(noOffersMessage);
+     importSelectedOffersButton.style.display = 'none';
+    }
+   }).catch(error => {
+    console.error('Error fetching offers data:', error);
+    const errorMessage = document.createElement('p');
+    errorMessage.textContent = "Грешка при вчитувањето на понудите. Проверете ја конзолата.";
+    offerTablesContainer.appendChild(errorMessage);
+    importSelectedOffersButton.style.display = 'none';
+   });
+  }
+
+  function createOfferTableForOffers(offer) {
+   const checkbox = document.createElement('input');
+   checkbox.type = 'checkbox';
+   checkbox.value = offer.acKeyView;
+   checkbox.id = `offer-checkbox-${offer.acKeyView}`;
+   const label = document.createElement('label');
+   label.htmlFor = `offer-checkbox-${offer.acKeyView}`;
+   label.style.display = 'block';
+   const table = document.createElement('table');
+   table.classList.add('order-table');
+   let orderInfoRow = table.insertRow();
+   let orderInfoCell1 = orderInfoRow.insertCell();
+   let orderInfoCell2 = orderInfoRow.insertCell();
+   let orderInfoCell3 = orderInfoRow.insertCell();
+   let orderInfoCell4 = orderInfoRow.insertCell();
+   orderInfoCell1.textContent = "НАРАЧКА: " + offer.acKeyView + " " + offer.acReceiver;
+   orderInfoCell2.textContent = "ДАТУМ: " + formatDate(offer.adDate);
+   orderInfoCell3.textContent = "РОК НА ИСПОРАКА: " + formatDate(offer.adDeliveryDate);
+   orderInfoCell4.textContent = "РЕФЕРЕНТ: " + offer.acConsignee;
+
+   function formatDate(dateString) {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `<span class="math-inline">\{day\}\.</span>{month}.${year}`;
+   }
+
+   let headerRow = table.insertRow();
+   headerRow.insertCell().textContent = "ШИФРА";
+   headerRow.insertCell().textContent = "НАЗИВ НА АРТИКЛОТ";
+   headerRow.insertCell().textContent = "КОЛИЧИНА";
+   headerRow.insertCell().textContent = "ОДДЕЛ";
+   headerRow.insertCell().textContent = "КЛАСИФИКАЦИЈА";
+
+   if (offer.Orderitem && Array.isArray(offer.Orderitem)) {
+    offer.Orderitem.forEach(orderItem => {
+     let itemRow = table.insertRow();
+     itemRow.insertCell().textContent = orderItem.acIdent;
+     itemRow.insertCell().textContent = orderItem.acName;
+     itemRow.insertCell().textContent = orderItem.anQty;
+     itemRow.insertCell().textContent = orderItem.acDept;
+     itemRow.insertCell().textContent = orderItem.ACCLASSIF;
+    });
+   }
+   label.appendChild(checkbox);
+   label.appendChild(table);
+   return label;
+  }
+
+  importSelectedOffersButton.addEventListener('click', () => {
+   showLoading();
+   const selectedOffers = [];
+   const selectedLabels = [];
+   document.querySelectorAll('#offer-tables-container input[type="checkbox"]:checked').forEach(checkbox => {
+    selectedOffers.push(checkbox.value);
+selectedLabels.push(checkbox.parentElement);
+   });
+   console.log("✅ Selected Offers (before JSON.stringify):", selectedOffers);
+   const localStorageOrders = localStorage.getItem('ordersData');
+   const formData = new URLSearchParams();
+   formData.append('selected_offers', JSON.stringify(selectedOffers));
+   if (localStorageOrders) {
+    formData.append('local_storage_orders', localStorageOrders);
+   }
+   fetch("lista-na-identi-sorted.php", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: formData.toString()
+   }).then(response => response.json()).then(data => {
+    if (data.error) {
+     alert("Податочна грешка: " + data.error);
+    } else if (data.orders && data.orders.length > 0) {
+     loadOrders(data.orders, !0, !0);
+     updateSidebarOrders(data.orders); // Update sidebar
+     alert("Импортирањето е успешно!");
+     selectedLabels.forEach(label => {
+      label.remove();
+     });
+     populateOfferTables();
+    }
+    offerImportPopup.style.display = 'none';
+    document.getElementById('modal-overlay').remove();
+    hideLoading();
+   }).catch(error => {
+    console.error('❌ Fetch Error:', error);
+    if (error.response) {
+     console.log("Response Status:", error.response.status);
+     error.response.json().then(errorData => {
+      console.log("Error Data:", errorData);
+      alert("Грешка: " + errorData.error);
+     }).catch((parseError) => {
+      console.log("Json parse error:", parseError);
+      error.response.text().then(text => {
+       console.log("Error Text:", text);
+       alert("Грешка: " + text);
+      }).catch((textError) => {
+       console.log("Text error:", textError);
+       alert("Непозната грешка.");
+      });
+     });
+    } else if (error.request) {
+     console.log("Request:", error.request);
+     alert("Грешка: Нема одговор од серверот.");
+    } else {
+     console.log("Message:", error.message);
+     alert("Грешка: " + error.message);
+    }
+    hideLoading();
+    window.location.reload(!0);
+   });
+  });
+
+  const getAOrderButton = document.getElementById('get-a-order');
+  const orderSearchPopup = document.getElementById('orderSearchPopup');
+  const closeOrderSearchPopupButton = document.getElementById('close-orderSearchPopup');
+  const orderSearchInput = document.getElementById('orderSearchInput');
+  const orderSuggestions = document.getElementById('orderSuggestions');
+  let offset = 0;
+  let loading = !1;
+
+  function loadOrderSuggestions() {
+   if (loading) return;
+   loading = !0;
+   fetch(`lista-na-identi-sorted.php?action=order_suggestions&offset=${offset}`).then(response => response.json()).then(data => {
+    if (data && data.suggestions && data.suggestions.length > 0) {
+     data.suggestions.forEach(suggestion => {
+      const option = document.createElement('option');
+      let receiver = suggestion.acReceiver;
+      console.log("Receiver before:", receiver);
+      option.value = `${suggestion.acKeyView} - ${receiver}`;
+      orderSuggestions.appendChild(option);
+     });
+     offset += data.suggestions.length;
+    }
+    loading = !1;
+   }).catch(error => {
+    console.error('Error fetching order suggestions:', error);
+    loading = !1;
+   });
+  }
+
+  loadOrderSuggestions();
+
+  const observer = new IntersectionObserver(entries => {
+   if (entries[0].isIntersecting) {
+    loadOrderSuggestions();
+   }
+  }, { threshold: 1 });
+
+  observer.observe(orderSuggestions.lastElementChild || orderSuggestions);
+
+  orderSearchInput.addEventListener('click', () => {
+   orderSearchInput.value = '';
+  });
+
+  const searchOrderButton = document.getElementById('searchOrderButton');
+  const orderSearchResults = document.getElementById('orderSearchResults');
+
+  getAOrderButton.addEventListener('click', () => {
+   orderSearchPopup.style.display = 'block';
+   const overlay = document.createElement('div');
+   overlay.id = 'modal-overlay';
+   document.body.appendChild(overlay);
+   overlay.addEventListener('click', () => {
+    if (event.target === overlay) {
+     orderSearchPopup.style.display = 'none';
+     overlay.style.display = 'none';
+    }
+   });
+  });
+
+  searchOrderButton.addEventListener('click', () => {
+   showLoading();
+   clearLocalStorage();
+   const inputValue = orderSearchInput.value;
+   const acKeyView = inputValue.split(' - ')[0];
+   orderSearchInput.value = acKeyView;
+   const formData = new URLSearchParams();
+   formData.append('order_code', acKeyView);
+   const requestBody = formData.toString();
+   console.log("Request URL:", 'lista-na-identi-sorted.php');
+   console.log("Request Body:", requestBody);
+   fetch('lista-na-identi-sorted.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: requestBody
+   }).then(response => {
+    console.log("Response Status:", response.status);
+    if (!response.ok) {
+     throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    return response.json();
+   }).then(data => {
+    console.log("Response Data:", data);
+    if (data.error) {
+     orderSearchResults.innerHTML = `<p>Грешка при пребарување: ${data.error}</p>`;
+    } else if (data.orders && data.orders.length > 0) {
+     let existingOrders = JSON.parse(localStorage.getItem('ordersData')) || [];
+     let newOrders = data.orders.filter(newOrder => !existingOrders.some(existingOrder => existingOrder.acKeyView === newOrder.acKeyView));
+     existingOrders = existingOrders.concat(newOrders);
+     localStorage.setItem('ordersData', JSON.stringify(existingOrders));
+     const orderContainer = document.getElementById('order-container');
+     orderContainer.innerHTML = '';
+     loadOrders(existingOrders, !0);
+     updateSidebarOrders(existingOrders); // Update sidebar
+     addDefaultTaskStatus(existingOrders);
+     updateClickUpAutomation(existingOrders);
+    } else {
+     orderSearchResults.innerHTML = "<p>Нема резултати.</p>";
+    }
+    hideLoading();
+   }).catch(error => {
+    console.error("Fetch error:", error);
+    orderSearchResults.innerHTML = `<p>Грешка при пребарување: ${error.message || 'Непозната грешка.'}</p>`;
+    hideLoading();
+   });
+  });
+
+  window.addEventListener('click', (event) => {
+   if (event.target == orderSearchPopup) {
+    orderSearchPopup.style.display = 'none';
+   }
+  });
+
+  closeOrderSearchPopupButton.addEventListener('click', () => {
+   orderSearchPopup.style.display = 'none';
+   window.location.reload(!0);
+  });
+ });
+  </script>
+ </body>
+ </html>
